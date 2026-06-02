@@ -1,0 +1,11 @@
+# Vercel Labs opensrc
+opensrc/
+.opensrc/
+
+# Dependencies
+node_modules/
+
+# Next.js/Vercel
+.next/
+out/
+.vercel
