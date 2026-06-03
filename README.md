@@ -59,7 +59,25 @@ graph TD
 
 ---
 
-## 3. Local Development Bring-Up
+## 3. Drawbacks & Gotchas
+
+- **The 429 Poison Pill:** If the output platform (e.g. Discord) rate-limits us, the Redis Stream can loop infinitely and crash the pod. A Dead Letter Stream is needed to catch, park, and back-off these messages.
+- **NAT Gateway Costs:** At 10,000 users, data transfer for image pulls and API calls will be expensive. VPC Endpoints are critical to keep traffic internal to the AWS backbone.
+- **The etcd Object Limit:** Running a 1:1 ratio of Tenant-to-KEDA ScaledObject will eventually overwhelm etcd. To scale safely beyond 5,000 tenants, we must abandon native KEDA per-tenant objects and write a custom Kubernetes Operator.
+
+---
+
+## 4. Cost Projections (Per User/Month)
+
+| Scale | Total Infrastructure | Cost / User / Month | Breakdown |
+| :--- | :--- | :--- | :--- |
+| 100 Users | ~$350 | $3.50 | High base cost for EKS Control Plane + 1 warm GPU Node. |
+| 1,000 Users | ~$3,500 | $3.50 | GPU inference costs scale roughly linearly with active users. |
+| 10,000 Users | ~$28,000 | $2.80 | Optimal bin-packing via Karpenter and Spot instance usage. |
+
+---
+
+## 5. Local Development Bring-Up
 
 ### Step 1: Spin up the Environment & Deploy
 Run the automation task using the provided `Makefile` to set up the Kind cluster, build the images, load them into Kind, and apply the manifests:
