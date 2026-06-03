@@ -1,9 +1,16 @@
-FROM node:22-alpine
-# Install build dependencies for compilation of native libraries (e.g. SQLite if needed)
-RUN apk add --no-cache python3 make g++ git
+FROM ghcr.io/openclaw/openclaw:latest
 
-WORKDIR /app
-COPY package*.json ./
+USER root
+WORKDIR /worker
+
+# Install only worker deps (ioredis + aws-sqs client)
+COPY package.json ./
 RUN npm install --omit=dev
+
 COPY index.js ./
-CMD ["npm", "start"]
+
+# Override CMD. The entrypoint in the base image is tini -s --
+ENV OPENCLAW_BOOT_COMMAND="openclaw"
+USER node
+
+CMD ["node", "index.js"]

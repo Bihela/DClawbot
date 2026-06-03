@@ -8,7 +8,6 @@
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.500.0",
-    "ioredis": "^5.4.1",
-    "openclaw": "github:openclaw/openclaw"
+    "ioredis": "^5.4.1"
   }
 }

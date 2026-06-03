@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app: worker
+spec:
+  replicas: 0 # KEDA will manage scaling automatically
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+      - name: worker
+        image: worker:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: REDIS_URL
+          value: "redis://redis:6379"
+        - name: SQS_QUEUE_URL
+          value: "http://localstack:4566/000000000000/agent-requests"
+        - name: AWS_REGION
+          value: "us-east-1"
+        - name: AWS_ENDPOINT
+          value: "http://localstack:4566"
+        - name: OPENCLAW_BOOT_COMMAND
+          value: 'openclaw onboard --non-interactive --accept-risk --skip-health && openclaw crestodian --message "Hello OpenClaw, what is your status?"'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keda-aws-secrets
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "test"
+  AWS_SECRET_ACCESS_KEY: "test"
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-aws-credentials
+spec:
+  secretTargetRef:
+  - parameter: awsAccessKeyID
+    name: keda-aws-secrets
+    key: AWS_ACCESS_KEY_ID
+  - parameter: awsSecretAccessKey
+    name: keda-aws-secrets
+    key: AWS_SECRET_ACCESS_KEY
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-scaler
+  labels:
+    app: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicaCount: 0  # Scale-to-zero
+  maxReplicaCount: 5  # Max scale-up limit
+  cooldownPeriod: 30  # Scale down cooldown
+  pollingInterval: 5  # SQS polling interval
+  triggers:
+  - type: aws-sqs-queue
+    metadata:
+      queueURL: "http://localstack.default.svc.cluster.local:4566/000000000000/agent-requests"
+      awsRegion: "us-east-1"
+      awsEndpoint: "http://localstack.default.svc.cluster.local:4566"
+      queueLength: "1" # Scale up with 1 or more messages in SQS queue
+    authenticationRef:
+      name: keda-aws-credentials
