@@ -11,7 +11,7 @@ This system is an asynchronous event-driven serverless platform designed to scal
 
 - **Edge Layer:** A webhook receiver receives incoming messages, immediately acknowledges receipt to prevent timeouts (the "3-second rule" from messaging platforms), and posts the payload into an SQS queue.
 - **Queue & Scaling Layer:** KEDA monitors SQS queue depth and provisions the agent worker pods on demand.
-- **Compute & State Layer:** Worker pods spin up, fetch the transaction logs/state from Redis, resume context, execute the prompt using OpenClaw, write the transactional WAL/outbox entry back to Redis, and output the response.
+- **Compute & State Layer:** Worker pods pull the agent's SQLite state from Redis, write it to disk, run the prompt through OpenClaw, then push the updated SQLite back to Redis when the job finishes.
 
 ### Architecture Diagram
 ```mermaid
@@ -39,7 +39,7 @@ graph TD
     subgraph StateLayer ["State Layer (Consistency)"]
         Redis["Redis Store"]
         Pod <--> Redis
-        Note1["Synchronous WAL + Outbox Intents"] -.-> Redis
+        Note1["Full SQLite Snapshot (GET/SET)"] -.-> Redis
     end
 
     subgraph OutputLayer ["Output Layer (Async)"]
@@ -54,7 +54,7 @@ graph TD
 ## 2. Architectural Assumptions
 
 - **Availability < Consistency:** It is better for an agent to take an extra few seconds to wake up than to lose context or hallucinate because it lost state. We use synchronous Redis writes to guarantee that context is never lost.
-- **Stateless Compute, Stateful Context:** Agent pods are treated as disposable runtime executors. Their memory is loaded dynamically from Redis at boot time, and flushed continuously via Write-Ahead Logging (WAL).
+- **Stateless Compute, Stateful Context:** The pods are disposable. On boot they grab the agent's SQLite DB from Redis, and after a successful run they push it back. If a pod dies, we just spin up another one and reload from the last good snapshot.
 - **Isolation:** Multi-tenant scale requires gVisor or Kata Containers to prevent host kernel escapes when running untrusted user tools.
 
 ---
@@ -64,16 +64,26 @@ graph TD
 - **The 429 Poison Pill:** If the output platform (e.g. Discord) rate-limits us, the Redis Stream can loop infinitely and crash the pod. A Dead Letter Stream is needed to catch, park, and back-off these messages.
 - **NAT Gateway Costs:** At 10,000 users, data transfer for image pulls and API calls will be expensive. VPC Endpoints are critical to keep traffic internal to the AWS backbone.
 - **The etcd Object Limit:** Running a 1:1 ratio of Tenant-to-KEDA ScaledObject will eventually overwhelm etcd. To scale safely beyond 5,000 tenants, we must abandon native KEDA per-tenant objects and write a custom Kubernetes Operator.
+- **Concurrency & Silent Data Loss:** Right now there's a "last writer wins" race. If two messages for the same `agentId` hit the queue at nearly the same time, KEDA can scale up two pods that both read the same snapshot. They process independently, and whichever finishes last overwrites the other's work. The user never sees an error, they just lose state. To fix this properly we'd either lock to `maxReplicaCount: 1` (simple but kills throughput), use a Redlock per `agentId`, or move state into PostgreSQL with row-level locking.
+- **Ephemeral Redis:** Redis in this prototype has no PVC and no AOF/RDB config. If the Redis pod restarts, all agent state is gone. For production this needs ElastiCache Multi-AZ with AOF turned on.
 
 ---
 
-## 4. Cost Projections (Per User/Month)
+## 4. Cost Estimation (1,000 Users — Napkin Math)
 
-| Scale | Total Infrastructure | Cost / User / Month | Breakdown |
-| :--- | :--- | :--- | :--- |
-| 100 Users | ~$350 | $3.50 | High base cost for EKS Control Plane + 1 warm GPU Node. |
-| 1,000 Users | ~$3,500 | $3.50 | GPU inference costs scale roughly linearly with active users. |
-| 10,000 Users | ~$28,000 | $2.80 | Optimal bin-packing via Karpenter and Spot instance usage. |
+OpenClaw delegates LLM calls to external APIs (OpenAI, Anthropic, etc), so our workers are just Node.js processes — no GPU nodes needed. My early design notes got this wrong and assumed we'd be running inference ourselves, which blew the estimates up to ~$3.50/user/month. After actually looking at how OpenClaw works, the real numbers are much lower.
+
+Assuming 1,000 users, each active ~15 min/day (~3.75 hrs compute per user per month):
+
+| Line Item | Monthly Cost | Notes |
+| :--- | :--- | :--- |
+| AWS EKS Control Plane | $73.00 | Fixed cost, single cluster. |
+| Fargate Compute (3,750 hrs) | ~$150.00 | 0.25 vCPU / 0.5 GB per pod, on-demand rates. |
+| ElastiCache Redis (cache.t4g.micro) | ~$16.00 | Single-node. Multi-AZ would double this. |
+| SQS | $0.00 | Free tier covers ~1M requests/month. |
+| **Total** | **~$239.00/month** | **~$0.24 per user/month** |
+
+This doesn't include LLM API token costs (paid per-token by the customer or platform), NAT Gateway fees (~$0.045/GB), ECR storage, or CloudWatch. At 10k users NAT Gateway and data transfer start to dominate — VPC Endpoints become essential.
 
 ---
 
