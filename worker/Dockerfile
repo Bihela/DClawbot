@@ -3,14 +3,16 @@ FROM ghcr.io/openclaw/openclaw:latest
 USER root
 WORKDIR /worker
 
-# Install only worker deps (ioredis + aws-sqs client)
+# Install worker deps
 COPY package.json ./
 RUN npm install --omit=dev
 
 COPY index.js ./
 
-# Override CMD. The entrypoint in the base image is tini -s --
-ENV OPENCLAW_BOOT_COMMAND="openclaw"
+# Run onboarding at build time to bootstrap config files for the node user
 USER node
+RUN openclaw onboard --non-interactive --accept-risk --skip-health
+
+ENV OPENCLAW_BOOT_COMMAND="openclaw crestodian"
 
 CMD ["node", "index.js"]

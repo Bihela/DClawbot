@@ -28,7 +28,7 @@ spec:
         - name: AWS_ENDPOINT
           value: "http://localstack:4566"
         - name: OPENCLAW_BOOT_COMMAND
-          value: 'openclaw onboard --non-interactive --accept-risk --skip-health && openclaw crestodian --message "Hello OpenClaw, what is your status?"'
+          value: "openclaw crestodian"
 ---
 apiVersion: v1
 kind: Secret

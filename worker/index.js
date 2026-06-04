@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { exec } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import Redis from 'ioredis';
 import { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } from '@aws-sdk/client-sqs';
 
@@ -20,18 +20,27 @@ const sqsClient = new SQSClient({
   },
 });
 
-async function runOpenClawBot(agentId) {
+async function runOpenClawBot(agentId, promptText) {
   return new Promise((resolve, reject) => {
     console.log(`[Worker] Starting openclaw bot for agent ${agentId}...`);
-    const child = exec(openclawBootCommand, {
+
+    // Split the boot command (e.g. "openclaw crestodian") so we can pass it to spawn safely
+    const cmdParts = openclawBootCommand.split(' ');
+    const command = cmdParts[0];
+    const args = [...cmdParts.slice(1), '--message', promptText];
+
+    // Using spawn with an array bypasses shell-quoting bugs entirely
+    const child = spawn(command, args, {
       env: {
         ...process.env,
         OPENCLAW_AGENT_ID: agentId,
-      }
+      },
+      // 'ignore' forces stdin to close so OpenClaw stops asking for an interactive TTY
+      stdio: ['ignore', 'pipe', 'pipe']
     });
 
-    child.stdout.on('data', (data) => console.log(`[OpenClaw stdout] ${data.trim()}`));
-    child.stderr.on('data', (data) => console.error(`[OpenClaw stderr] ${data.trim()}`));
+    child.stdout.on('data', (data) => console.log(`[OpenClaw stdout] ${data.toString().trim()}`));
+    child.stderr.on('data', (data) => console.error(`[OpenClaw stderr] ${data.toString().trim()}`));
 
     child.on('close', (code) => {
       if (code === 0) {
@@ -46,15 +55,17 @@ async function runOpenClawBot(agentId) {
 
 async function processMessage(message) {
   let agentId;
+  let promptText;
   try {
     const payload = JSON.parse(message.Body);
     agentId = payload.agentId;
+    promptText = payload.prompt || "Hello OpenClaw, what is your status?";
     if (!agentId) {
       throw new Error("Message body is missing 'agentId'");
     }
   } catch (err) {
     console.error('[Worker] Failed to parse message body:', err);
-    return;
+    throw err;
   }
 
   const redisKey = `agent:state:${agentId}`;
@@ -76,8 +87,8 @@ async function processMessage(message) {
       console.log(`[Worker] No existing state found in Redis for agent ${agentId}. Starting fresh.`);
     }
 
-    // 2. Run the OpenClaw bot
-    await runOpenClawBot(agentId);
+    // 2. Run the OpenClaw bot with Spawn
+    await runOpenClawBot(agentId, promptText);
 
     // 3. Upload the updated SQLite state back to Redis
     if (await fs.stat(dbPath).catch(() => false)) {
@@ -89,6 +100,7 @@ async function processMessage(message) {
 
   } catch (error) {
     console.error(`[Worker] Error processing job for agent ${agentId}:`, error);
+    throw error; // This ensures we never delete a failed message
   }
 }
 
@@ -108,17 +120,21 @@ async function pollQueue() {
         const message = response.Messages[0];
         console.log(`[Worker] Received job: ${message.MessageId}`);
 
-        await processMessage(message);
+        try {
+          await processMessage(message);
 
-        const deleteCommand = new DeleteMessageCommand({
-          QueueUrl: queueUrl,
-          ReceiptHandle: message.ReceiptHandle,
-        });
-        await sqsClient.send(deleteCommand);
-        console.log(`[Worker] Job acknowledged and deleted: ${message.MessageId}`);
+          const deleteCommand = new DeleteMessageCommand({
+            QueueUrl: queueUrl,
+            ReceiptHandle: message.ReceiptHandle,
+          });
+          await sqsClient.send(deleteCommand);
+          console.log(`[Worker] Job acknowledged and deleted: ${message.MessageId}`);
+        } catch (jobError) {
+          console.error(`[Worker] Job failed. Leaving message in queue for retry.`);
+        }
       }
     } catch (error) {
-      console.error('[Worker] Error polling SQS queue:', error);
+      console.error('[Worker] Error polling SQS queue:', error.message);
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
   }
