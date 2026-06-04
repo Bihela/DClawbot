@@ -83,7 +83,7 @@ Assuming 1,000 users, each active ~15 min/day (~3.75 hrs compute per user per mo
 | SQS | $0.00 | Free tier covers ~1M requests/month. |
 | **Total** | **~$239.00/month** | **~$0.24 per user/month** |
 
-This doesn't include LLM API token costs (paid per-token by the customer or platform), NAT Gateway fees (~$0.045/GB), ECR storage, or CloudWatch. At 10k users NAT Gateway and data transfer start to dominate — VPC Endpoints become essential.
+This doesn't include LLM API token costs (paid per-token by the customer or platform), NAT Gateway fees (~$0.045/GB), ECR storage, or CloudWatch. At 10k users NAT Gateway and data transfer start to dominate  VPC Endpoints become essential.
 
 ---
 
