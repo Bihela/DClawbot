@@ -112,6 +112,14 @@ sudo kubectl port-forward svc/webhook 3000:80
 
 Now, any webhooks directed to `http://localhost:3000` will be ingested by the receiver, placed in SQS, and trigger worker pods.
 
+### Step 3: Send a Test Request
+
+```bash
+curl -X POST http://localhost:3000/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"agentId": "user-1", "prompt": "what did we talk about last time?"}'
+```
+
 ### Clean Up
 To clean up and destroy the cluster:
 
